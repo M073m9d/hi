@@ -3,115 +3,133 @@ import matplotlib.pyplot as plt
 import matplotlib.animation as animation
 from scipy.optimize import linear_sum_assignment
 
-def generate_square_border_points(n, num_lines=4):
-    """توليد نقاط على حدود المربع فقط مع تقسيمها إلى خطوط"""
-    side = n // num_lines  # توزيع النقاط على عدد الخطوط المطلوبة
+# Shape Generation Functions
+def generate_filled_square(n):
+    """Generate points filling a square area"""
+    side = int(np.sqrt(n))
     x = np.linspace(-1, 1, side)
     y = np.linspace(-1, 1, side)
-    top = np.column_stack([x, np.ones_like(x)])
-    bottom = np.column_stack([x, -np.ones_like(x)])
-    left = np.column_stack([-np.ones_like(y), y])
-    right = np.column_stack([np.ones_like(y), y])
-    points = np.vstack([top, bottom, left, right])
-    return points[:n], [top, bottom, left, right]  # إرجاع النقاط والخطوط
+    xx, yy = np.meshgrid(x, y)
+    points = np.column_stack([xx.ravel(), yy.ravel()])
+    return points[:n]
 
-def generate_circle_border_points(n, num_lines=4):
-    """توليد نقاط على محيط الدائرة مع تقسيمها إلى خطوط"""
+def generate_circle_border_points(n):
+    """Generate points along a circle's circumference"""
     angles = np.linspace(0, 2 * np.pi, n, endpoint=False)
-    x = np.cos(angles)
-    y = np.sin(angles)
-    points = np.column_stack([x, y])
-    return points, np.array_split(points, num_lines)  # تقسيم النقاط إلى خطوط
+    return np.column_stack([np.cos(angles), np.sin(angles)])
 
+# Grouping Functions
+def split_into_quadrants(points):
+    """Divide points into 4 quadrants"""
+    return [
+        points[(points[:, 0] >= 0) & (points[:, 1] >= 0)],  # Q1
+        points[(points[:, 0] < 0) & (points[:, 1] >= 0)],   # Q2
+        points[(points[:, 0] < 0) & (points[:, 1] < 0)],     # Q3
+        points[(points[:, 0] >= 0) & (points[:, 1] < 0)]    # Q4
+    ]
+
+def split_into_arcs(points, num_arcs=4):
+    """Divide circle points into equal arcs"""
+    return np.array_split(points, num_arcs)
+
+# Matching and Path Planning
 def match_points(start, end):
-    """استخدام خوارزمية Hungarian لإيجاد أفضل تطابق بين النقاط"""
+    """Optimal point matching using Hungarian algorithm"""
     cost_matrix = np.linalg.norm(start[:, np.newaxis] - end, axis=2)
     row_ind, col_ind = linear_sum_assignment(cost_matrix)
     return end[col_ind]
 
 def get_bezier_curve(p0, p1, num_points=100, amplitude=0.5):
-    """
-    حساب منحنى Bezier من الدرجة الثانية باستخدام نقطة البداية والنهاية ونقطة تحكم محسوبة
-    بحيث يكون المنحنى منحنيًا بشكل واضح.
-    """
+    """Generate quadratic Bezier curve with control point"""
     mid = (p0 + p1) / 2
     diff = p1 - p0
     norm = np.linalg.norm(diff)
-    if norm == 0:
-        norm = 1
-    perp = np.array([-diff[1], diff[0]]) / norm
+    perp = np.array([-diff[1], diff[0]]) / (norm + 1e-6)  # Avoid division by zero
     control = mid + perp * amplitude
     t = np.linspace(0, 1, num_points)[:, None]
-    curve = (1 - t)**2 * p0 + 2 * (1 - t) * t * control + t**2 * p1
-    return curve
+    return (1 - t)**2 * p0 + 2 * (1 - t) * t * control + t**2 * p1
 
-def animate(i, start_lines, end_lines, scatter, num_lines, frames_per_line):
-    """
-    تحريك كل خط بشكل تسلسلي:
-      - لكل خط فترة زمنية خاصة به يبدأ بعدها الحركة.
-      - خلال فترة الحركة يتم استخدام تأثير ease in/out.
-    """
-    new_points_lines = []
-    for j, (start, end) in enumerate(zip(start_lines, end_lines)):
-        start_frame = j * frames_per_line
-        end_frame = (j + 1) * frames_per_line
+# Animation Setup
+def animate(i, bezier_paths, groups_indices, num_groups, frames_per_group, scatter):
+    """Update point positions based on precomputed Bezier paths"""
+    all_points = np.vstack(initial_groups)  # Start with initial positions
+    for group_idx in range(num_groups):
+        start_frame = group_idx * frames_per_group
+        current_frame = i - start_frame
         
-        if i < start_frame:
-            f = 0
-        elif i >= end_frame:
-            f = 1
-        else:
-            f = (i - start_frame) / (end_frame - start_frame)
-            f = (1 - np.cos(f * np.pi)) / 2  # تأثير ease in/out
-        
-        new_pos = start + (end - start) * f
-        new_points_lines.append(new_pos)
+        if 0 <= current_frame < frames_per_group:
+            group_curves = bezier_paths[group_idx]
+            start_idx, end_idx = groups_indices[group_idx]
+            
+            for point_idx, curve in enumerate(group_curves):
+                all_points[start_idx + point_idx] = curve[current_frame]
     
-    all_points = np.vstack(new_points_lines)
     scatter.set_offsets(all_points)
     return scatter,
 
-# إعداد البيانات
-n_points = 100   # عدد النقاط
-num_lines = 4    # تقسيم التشكيل إلى خطوط
-frames = 80      # إجمالي عدد الإطارات (يمكن تعديلها)
-frames_per_line = frames // num_lines  # عدد الإطارات لكل خط
+# Main Configuration
+n_points = 100
+num_groups = 4
+frames = 80
+frames_per_group = frames // num_groups
 
-# توليد نقاط الحدود للمربع والدائرة
-square_points, square_lines = generate_square_border_points(n_points, num_lines)
-circle_points, circle_lines = generate_circle_border_points(n_points, num_lines)
+# Generate and group points
+square_points = generate_filled_square(n_points)
+circle_points = generate_circle_border_points(n_points)
 
-# تعيين الإزاحات بحيث يكون المربع في الإحداثيات الموجبة والدائرة في الإحداثيات السالبة
+initial_groups = split_into_quadrants(square_points)
+target_groups = split_into_arcs(circle_points, num_groups)
+
+# Apply visual offsets
 square_offset = np.array([1.5, 1.5])
 circle_offset = np.array([-1.5, -1.5])
-square_points = square_points + square_offset
-square_lines = [line + square_offset for line in square_lines]
-circle_points = circle_points + circle_offset
-circle_lines = [line + circle_offset for line in circle_lines]
+initial_groups = [g + square_offset for g in initial_groups]
+target_groups = [g + circle_offset for g in target_groups]
 
-# تحسين توزيع النقاط لكل خط باستخدام Hungarian
-circle_lines = [match_points(s, e) for s, e in zip(square_lines, circle_lines)]
+# Match points within groups and compute Bezier paths
+bezier_paths = []
+for group_idx in range(num_groups):
+    matched_target = match_points(initial_groups[group_idx], target_groups[group_idx])
+    group_curves = [
+        get_bezier_curve(s, e, frames_per_group) 
+        for s, e in zip(initial_groups[group_idx], matched_target)
+    ]
+    bezier_paths.append(group_curves)
 
-# إنشاء الشكل البياني
-fig, ax = plt.subplots()
+# Create group indices mapping
+groups_indices = []
+current_idx = 0
+for group in initial_groups:
+    groups_indices.append((current_idx, current_idx + len(group)))
+    current_idx += len(group)
+
+# Visualization Setup
+fig, ax = plt.subplots(figsize=(8, 8))
 ax.set_xlim(-3, 3)
 ax.set_ylim(-3, 3)
 ax.set_aspect('equal')
-scatter = ax.scatter(square_points[:, 0], square_points[:, 1])
+ax.set_title('Formation Transition Visualization')
 
-# رسم مسارات إرشادية لكل خط بألوان مختلفة لتوضيح الحركة
-colors = plt.cm.viridis(np.linspace(0, 1, num_lines))
-for j, (s_line, c_line) in enumerate(zip(square_lines, circle_lines)):
-    start_center = np.mean(s_line, axis=0)
-    end_center = np.mean(c_line, axis=0)
-    curve = get_bezier_curve(start_center, end_center, num_points=100, amplitude=0.5)
-    ax.plot(curve[:, 0], curve[:, 1], '--', color=colors[j], linewidth=2, 
-            label=f'خط {j+1} (دليل)')
+# Plot leader paths
+colors = plt.cm.viridis(np.linspace(0, 1, num_groups))
+for group_idx in range(num_groups):
+    leader_start = np.mean(initial_groups[group_idx], axis=0)
+    leader_end = np.mean(target_groups[group_idx], axis=0)
+    curve = get_bezier_curve(leader_start, leader_end, 100)
+    ax.plot(curve[:, 0], curve[:, 1], '--', color=colors[group_idx], 
+            linewidth=2, label=f'Group {group_idx+1} Leader')
 
-ax.legend(loc='upper right')
+ax.legend()
 
-# بدء الأنيميشن: حركة كل خط بشكل تسلسلي دون تداخل
-ani = animation.FuncAnimation(fig, animate, frames=frames, 
-                              fargs=(square_lines, circle_lines, scatter, num_lines, frames_per_line), 
-                              interval=50)
+# Initialize scatter plot
+all_initial_points = np.vstack(initial_groups)
+scatter = ax.scatter(all_initial_points[:, 0], all_initial_points[:, 1])
+
+# Create and show animation
+ani = animation.FuncAnimation(
+    fig, animate, frames=frames,
+    fargs=(bezier_paths, groups_indices, num_groups, frames_per_group, scatter),
+    interval=50, blit=True
+)
+
 plt.show()
